@@ -194,8 +194,13 @@ void processWorkload(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer* d
     std::vector<uint32_t> delete_ids;
     std::vector<datatype_t*> query_vectors;
 
+    // Store all query results for recall computation
+    std::vector<uint32_t*> all_query_results;
+    uint32_t total_queries_processed = 0;
+
     double last_consolidation_time = 0.0;
     uint32_t consolidation_count = 0;
+    double total_consolidation_time = 0.0;
 
     for (size_t i = 0; i < workload.size(); i++) {
         const WorkloadEvent& event = workload[i];
@@ -259,7 +264,11 @@ void processWorkload(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer* d
                     query_latencies.push_back(event_timer.Elapsed() * 1000.0);
 
                     free(h_queries);
-                    free(h_results);
+
+                    // Store results for recall computation
+                    all_query_results.push_back(h_results);
+                    total_queries_processed += query_vectors.size();
+
                     metrics->total_queries += query_vectors.size();
                     query_vectors.clear();
                 }
@@ -274,7 +283,8 @@ void processWorkload(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer* d
         double elapsed = total_timer.Elapsed() - last_consolidation_time;
 
         if (shouldConsolidate(fresh, del_buf, elapsed)) {
-            consolidateIndices(static_idx, fresh, del_buf);
+            double consol_time = consolidateIndices(static_idx, fresh, del_buf);
+            total_consolidation_time += consol_time;
             last_consolidation_time = total_timer.Elapsed();
             consolidation_count++;
         }
@@ -307,7 +317,11 @@ void processWorkload(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer* d
         searchDualIndex(static_idx, fresh, del_buf, h_queries, h_results,
                        query_vectors.size(), recall_at);
         free(h_queries);
-        free(h_results);
+
+        // Store results for recall computation
+        all_query_results.push_back(h_results);
+        total_queries_processed += query_vectors.size();
+
         metrics->total_queries += query_vectors.size();
     }
 
@@ -316,6 +330,7 @@ void processWorkload(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer* d
     // Compute metrics
     metrics->total_elapsed_time = total_timer.Elapsed();
     metrics->num_consolidations = consolidation_count;
+    metrics->consolidation_time_total = total_consolidation_time;
 
     if (!insert_latencies.empty()) {
         double sum = 0;
@@ -342,6 +357,56 @@ void processWorkload(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer* d
     metrics->static_index_size = static_idx->num_nodes;
     metrics->fresh_index_size = *fresh->h_count;
     metrics->num_deleted = del_buf->num_deleted;
+
+    // Memory usage tracking
+    metrics->gpu_memory_used_bytes = static_idx->total_size_bytes +
+                                     fresh->total_size_bytes +
+                                     del_buf->bitmap_size_bytes;
+
+    metrics->cpu_memory_used_bytes = static_idx->total_size_bytes +  // h_pIndex
+                                     fresh->total_size_bytes;         // h_pIndex
+
+    // Compute recall if we have ground truth and query results
+    if (ground_truth != nullptr && !all_query_results.empty() && total_queries_processed > 0) {
+        printf("[Recall] Computing accuracy for %u queries...\n", total_queries_processed);
+
+        // Concatenate all query results into a single array
+        uint32_t* all_results = (uint32_t*)malloc(total_queries_processed * recall_at * sizeof(uint32_t));
+        uint32_t offset = 0;
+        for (size_t i = 0; i < all_query_results.size(); i++) {
+            uint32_t batch_size = (i == all_query_results.size() - 1 && !query_vectors.empty())
+                                   ? query_vectors.size()
+                                   : QUERY_BATCH_SIZE;
+            if (batch_size == 0) batch_size = QUERY_BATCH_SIZE;
+
+            memcpy(all_results + offset * recall_at, all_query_results[i],
+                   batch_size * recall_at * sizeof(uint32_t));
+            offset += batch_size;
+        }
+
+        // Compute recall at different k values
+        if (recall_at >= 1) {
+            metrics->recall_at_1 = calculate_recall(total_queries_processed, ground_truth, nullptr,
+                                                     gt_dim, all_results, recall_at, 1);
+        }
+        if (recall_at >= 10) {
+            metrics->recall_at_10 = calculate_recall(total_queries_processed, ground_truth, nullptr,
+                                                      gt_dim, all_results, recall_at, 10);
+        }
+        if (recall_at >= 100) {
+            metrics->recall_at_100 = calculate_recall(total_queries_processed, ground_truth, nullptr,
+                                                       gt_dim, all_results, recall_at, 100);
+        }
+
+        free(all_results);
+        printf("[Recall] Recall@1: %.2f%%, Recall@10: %.2f%%, Recall@100: %.2f%%\n",
+               metrics->recall_at_1, metrics->recall_at_10, metrics->recall_at_100);
+    }
+
+    // Free query results
+    for (auto* results : all_query_results) {
+        free(results);
+    }
 
     printf("[Workload] Processing complete in %.2f seconds\n", metrics->total_elapsed_time);
 }

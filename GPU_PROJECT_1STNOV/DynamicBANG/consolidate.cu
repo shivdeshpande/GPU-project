@@ -78,7 +78,7 @@ bool shouldConsolidate(FreshIndex* fresh, DeleteBuffer* del_buf, double elapsed_
     return false;
 }
 
-void consolidateIndices(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer* del_buf) {
+double consolidateIndices(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer* del_buf) {
     printf("[Consolidation] Starting consolidation...\n");
 
     CPUTimer timer;
@@ -156,10 +156,13 @@ void consolidateIndices(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer
     clearDeleteBuffer(del_buf);
 
     timer.Stop();
-    printf("[Consolidation] Completed in %.2f seconds\n", timer.Elapsed());
+    double elapsed = timer.Elapsed();
+    printf("[Consolidation] Completed in %.2f seconds\n", elapsed);
     printf("[Consolidation] New static index: %u nodes, %.2f MB\n",
            static_idx->num_nodes,
            new_size_bytes / (1024.0 * 1024.0));
+
+    return elapsed;
 }
 
 void freeStaticIndex(StaticIndex* index) {

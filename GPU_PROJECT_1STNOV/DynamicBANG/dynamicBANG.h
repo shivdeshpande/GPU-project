@@ -220,7 +220,7 @@ void searchDualIndex(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer* d
 
 // Consolidation
 bool shouldConsolidate(FreshIndex* fresh, DeleteBuffer* del_buf, double elapsed_time);
-void consolidateIndices(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer* del_buf);
+double consolidateIndices(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer* del_buf);
 
 // Workload processing
 std::vector<WorkloadEvent> loadWorkload(const char* jsonl_file, uint32_t max_events);

@@ -4,20 +4,20 @@ operation_counts:
   queries: 16000
 
 throughput:
-  insert_qps: 7017.33
-  delete_qps: 2339.11
-  query_qps: 37425.75
-  overall: 46782.19
+  insert_qps: 14226.31
+  delete_qps: 4742.10
+  query_qps: 75873.63
+  overall: 94842.04
 
 latency_ms:
-  insert_avg: 6.963
-  delete_avg: 11.469
-  query_avg: 23.366
+  insert_avg: 0.394
+  delete_avg: 0.173
+  query_avg: 11.840
 
 accuracy:
-  recall_at_1: 0.00
-  recall_at_10: 0.00
-  recall_at_100: 0.00
+  recall_at_1: 0.17
+  recall_at_10: 3.90
+  recall_at_100: 27.10
 
 index:
   static_size: 13000
@@ -26,7 +26,7 @@ index:
 
 consolidation:
   count: 3
-  total_time: 0.00
-  avg_time: 0.00
+  total_time: 0.02
+  avg_time: 0.01
 
-total_time: 0.43
+total_time: 0.21

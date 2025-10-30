@@ -65,29 +65,61 @@ private:
 
 inline void load_truthset(const std::string& bin_file, uint32_t*& ids,
                           float*& dists, size_t& npts, size_t& dim) {
-    uint64_t read_blk_size = 64 * 1024 * 1024;
-    cached_ifstream reader(bin_file, read_blk_size);
-    size_t actual_file_size = reader.get_file_size();
+    // Support both .ivecs format and custom binary format
+    std::ifstream reader(bin_file, std::ios::binary | std::ios::ate);
+    size_t actual_file_size = reader.tellg();
+    reader.seekg(0, std::ios::beg);
 
-    int npts_i32, dim_i32;
-    reader.read((char*)&npts_i32, sizeof(int));
-    reader.read((char*)&dim_i32, sizeof(int));
-    npts = (unsigned)npts_i32;
-    dim = (unsigned)dim_i32;
+    // Try .ivecs format first (each vector: [dim][val1][val2]...[valdim])
+    int first_dim;
+    reader.read((char*)&first_dim, sizeof(int));
 
-    printf("[Truthset] Loading: #pts = %lu, #dims = %lu\n", npts, dim);
+    // Check if this looks like .ivecs format
+    size_t record_size = sizeof(int) + first_dim * sizeof(uint32_t);
+    if (actual_file_size % record_size == 0) {
+        // .ivecs format detected
+        npts = actual_file_size / record_size;
+        dim = first_dim;
 
-    size_t expected_actual_file_size =
-        2 * npts * dim * sizeof(uint32_t) + 2 * sizeof(uint32_t);
-    if (actual_file_size != expected_actual_file_size) {
-        fprintf(stderr, "Warning: File size mismatch. Actual=%lu, Expected=%lu\n",
-                actual_file_size, expected_actual_file_size);
+        printf("[Truthset] Loading .ivecs: #pts = %lu, #dims = %lu\n", npts, dim);
+
+        ids = new uint32_t[npts * dim];
+        dists = nullptr;  // .ivecs doesn't include distances
+
+        reader.seekg(0, std::ios::beg);
+        for (size_t i = 0; i < npts; i++) {
+            int d;
+            reader.read((char*)&d, sizeof(int));
+            if (d != (int)dim) {
+                fprintf(stderr, "Error: Dimension mismatch at vector %lu\n", i);
+                break;
+            }
+            reader.read((char*)(ids + i * dim), dim * sizeof(uint32_t));
+        }
+    } else {
+        // Custom binary format: [npts][dim][ids...][dists...]
+        reader.seekg(0, std::ios::beg);
+        int npts_i32, dim_i32;
+        reader.read((char*)&npts_i32, sizeof(int));
+        reader.read((char*)&dim_i32, sizeof(int));
+        npts = (unsigned)npts_i32;
+        dim = (unsigned)dim_i32;
+
+        printf("[Truthset] Loading custom format: #pts = %lu, #dims = %lu\n", npts, dim);
+
+        size_t expected_file_size = 2 * npts * dim * sizeof(uint32_t) + 2 * sizeof(uint32_t);
+        if (actual_file_size != expected_file_size) {
+            fprintf(stderr, "Warning: File size mismatch. Actual=%lu, Expected=%lu\n",
+                    actual_file_size, expected_file_size);
+        }
+
+        ids = new uint32_t[npts * dim];
+        reader.read((char*)ids, npts * dim * sizeof(uint32_t));
+        dists = new float[npts * dim];
+        reader.read((char*)dists, npts * dim * sizeof(float));
     }
 
-    ids = new uint32_t[npts * dim];
-    reader.read((char*)ids, npts * dim * sizeof(uint32_t));
-    dists = new float[npts * dim];
-    reader.read((char*)dists, npts * dim * sizeof(float));
+    reader.close();
 }
 
 template<typename T>
