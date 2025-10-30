@@ -1,0 +1,32 @@
+operation_counts:
+  inserts: 3000
+  deletes: 1000
+  queries: 16000
+
+throughput:
+  insert_qps: 7017.33
+  delete_qps: 2339.11
+  query_qps: 37425.75
+  overall: 46782.19
+
+latency_ms:
+  insert_avg: 6.963
+  delete_avg: 11.469
+  query_avg: 23.366
+
+accuracy:
+  recall_at_1: 0.00
+  recall_at_10: 0.00
+  recall_at_100: 0.00
+
+index:
+  static_size: 13000
+  fresh_size: 0
+  deleted: 1000
+
+consolidation:
+  count: 3
+  total_time: 0.00
+  avg_time: 0.00
+
+total_time: 0.43
