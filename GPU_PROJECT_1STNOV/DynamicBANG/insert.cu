@@ -42,38 +42,111 @@ __global__ void insertVectorsKernel(uint8_t* d_pIndex_fresh,
 }
 
 /**
- * Build graph edges for inserted vectors using greedy search
- * This is simplified - full implementation would run greedy search
+ * Compute distances from a fresh vector to static index for neighbor selection
  */
-__global__ void buildGraphEdgesKernel(uint8_t* d_pIndex_static,
-                                     uint8_t* d_pIndex_fresh,
-                                     uint32_t* d_fresh_count,
-                                     uint32_t static_size,
-                                     uint32_t start_idx,
-                                     uint32_t end_idx) {
-    uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t fresh_id = start_idx + idx;
+__global__ void computeDistancesToStaticKernel(uint8_t* d_pIndex_static,
+                                               uint8_t* d_pIndex_fresh,
+                                               uint32_t fresh_id,
+                                               uint32_t static_size,
+                                               float* d_distances,
+                                               uint32_t* d_indices) {
+    uint32_t static_id = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (fresh_id >= end_idx) return;
+    if (static_id >= static_size) return;
 
-    // Get vector from fresh index
+    // Get fresh vector
+    datatype_t* fresh_vec = (datatype_t*)(d_pIndex_fresh + (fresh_id * INDEX_ENTRY_LEN));
+
+    // Get static vector
+    datatype_t* static_vec = (datatype_t*)(d_pIndex_static + (static_id * INDEX_ENTRY_LEN));
+
+    // Compute L2 distance
+    float dist = 0.0f;
+    for (uint32_t i = 0; i < D; i++) {
+        float diff = (float)fresh_vec[i] - (float)static_vec[i];
+        dist += diff * diff;
+    }
+
+    d_distances[static_id] = dist;
+    d_indices[static_id] = static_id;
+}
+
+/**
+ * Simple selection sort to find top-K neighbors (runs on single thread per vector)
+ * For small K and infrequent inserts, this is acceptable
+ */
+__global__ void selectTopKNeighborsKernel(float* d_distances,
+                                         uint32_t* d_indices,
+                                         uint32_t* d_neighbors,
+                                         uint32_t static_size,
+                                         uint32_t num_neighbors,
+                                         uint32_t fresh_id) {
+    // Each block handles one fresh vector
+    if (blockIdx.x != fresh_id) return;
+
+    // Use shared memory for top-K selection
+    extern __shared__ float s_data[];
+    float* s_dists = s_data;
+    uint32_t* s_indices = (uint32_t*)&s_dists[num_neighbors];
+
+    // Initialize with first num_neighbors elements
+    if (threadIdx.x < num_neighbors && threadIdx.x < static_size) {
+        s_dists[threadIdx.x] = d_distances[threadIdx.x];
+        s_indices[threadIdx.x] = d_indices[threadIdx.x];
+    }
+    __syncthreads();
+
+    // Simple insertion into top-K for remaining elements
+    for (uint32_t i = threadIdx.x + num_neighbors; i < static_size; i += blockDim.x) {
+        float dist = d_distances[i];
+        uint32_t idx = d_indices[i];
+
+        // Find position in top-K
+        for (uint32_t j = 0; j < num_neighbors; j++) {
+            if (dist < s_dists[j]) {
+                // Shift and insert
+                for (uint32_t k = num_neighbors - 1; k > j; k--) {
+                    s_dists[k] = s_dists[k - 1];
+                    s_indices[k] = s_indices[k - 1];
+                }
+                s_dists[j] = dist;
+                s_indices[j] = idx;
+                break;
+            }
+        }
+    }
+    __syncthreads();
+
+    // Write results
+    if (threadIdx.x < num_neighbors) {
+        d_neighbors[threadIdx.x] = s_indices[threadIdx.x];
+    }
+}
+
+/**
+ * Build graph edges for inserted vectors using nearest neighbor search
+ * Connects each fresh node to its R nearest neighbors from the static index
+ */
+__global__ void buildGraphEdgesKernel(uint8_t* d_pIndex_fresh,
+                                     uint32_t* d_neighbors,
+                                     uint32_t fresh_id,
+                                     uint32_t max_degree) {
+    if (blockIdx.x != 0) return;
+
+    // Get fresh node
     uint8_t* node = d_pIndex_fresh + (fresh_id * INDEX_ENTRY_LEN);
-    datatype_t* vec = (datatype_t*)node;
-
-    // Simple strategy: Connect to MEDOID and a few random nodes from static index
-    // In full implementation, this would run greedy search to find neighbors
-
     uint32_t* degree_ptr = (uint32_t*)(node + D * sizeof(datatype_t));
     uint32_t* neighbors = degree_ptr + 1;
 
-    // Add MEDOID as first neighbor
-    neighbors[0] = MEDOID;
-    *degree_ptr = 1;
+    // Copy neighbors
+    if (threadIdx.x < max_degree) {
+        neighbors[threadIdx.x] = d_neighbors[threadIdx.x];
+    }
 
-    // TODO: Full implementation would:
-    // 1. Run greedy search on combined static+fresh index
-    // 2. Find R nearest neighbors using robust prune
-    // 3. Update bidirectional edges
+    // Set degree
+    if (threadIdx.x == 0) {
+        *degree_ptr = max_degree;
+    }
 }
 
 // ============================================================================
@@ -162,18 +235,66 @@ void insertBatch(FreshIndex* fresh, StaticIndex* static_idx, DeleteBuffer* del_b
     err = cudaDeviceSynchronize();
     gpuErrchk(err);
 
-    // Build graph edges (simplified)
-    buildGraphEdgesKernel<<<num_blocks, 256>>>(
-        static_idx->d_pIndex,
-        fresh->d_pIndex,
-        fresh->d_count,
-        static_idx->num_nodes,
-        current_count,
-        current_count + batch_size
-    );
+    // Build graph edges for each inserted vector
+    printf("[Insert] Building graph edges for %u vectors...\n", batch_size);
 
-    err = cudaDeviceSynchronize();
+    // Allocate temporary buffers for distance computation and neighbor selection
+    float* d_distances;
+    uint32_t* d_indices;
+    uint32_t* d_selected_neighbors;
+
+    err = cudaMalloc(&d_distances, static_idx->num_nodes * sizeof(float));
     gpuErrchk(err);
+    err = cudaMalloc(&d_indices, static_idx->num_nodes * sizeof(uint32_t));
+    gpuErrchk(err);
+    err = cudaMalloc(&d_selected_neighbors, R * sizeof(uint32_t));
+    gpuErrchk(err);
+
+    // For each freshly inserted vector, find its R nearest neighbors
+    for (uint32_t i = 0; i < batch_size; i++) {
+        uint32_t fresh_id = current_count + i;
+
+        // Compute distances to all static vectors
+        uint32_t dist_blocks = (static_idx->num_nodes + 255) / 256;
+        computeDistancesToStaticKernel<<<dist_blocks, 256>>>(
+            static_idx->d_pIndex,
+            fresh->d_pIndex,
+            fresh_id,
+            static_idx->num_nodes,
+            d_distances,
+            d_indices
+        );
+        gpuErrchk(cudaDeviceSynchronize());
+
+        // Select top R neighbors
+        uint32_t num_neighbors_to_select = (R < static_idx->num_nodes) ? R : static_idx->num_nodes;
+        size_t shared_mem_size = num_neighbors_to_select * (sizeof(float) + sizeof(uint32_t));
+        selectTopKNeighborsKernel<<<1, 256, shared_mem_size>>>(
+            d_distances,
+            d_indices,
+            d_selected_neighbors,
+            static_idx->num_nodes,
+            num_neighbors_to_select,
+            fresh_id
+        );
+        gpuErrchk(cudaDeviceSynchronize());
+
+        // Build edges in fresh index
+        buildGraphEdgesKernel<<<1, 256>>>(
+            fresh->d_pIndex,
+            d_selected_neighbors,
+            fresh_id,
+            num_neighbors_to_select
+        );
+        gpuErrchk(cudaDeviceSynchronize());
+    }
+
+    // Cleanup temporary buffers
+    cudaFree(d_distances);
+    cudaFree(d_indices);
+    cudaFree(d_selected_neighbors);
+
+    printf("[Insert] Graph construction complete. Each node connected to %u neighbors.\n", R);
 
     // Copy result IDs back
     err = cudaMemcpy(h_ids, d_ids, batch_size * sizeof(uint32_t), cudaMemcpyDeviceToHost);

@@ -349,11 +349,12 @@ class QueryCouplingStrategy:
 class ScenarioGenerator:
     """Generate workloads for different scenarios."""
     
-    def __init__(self, config: ScenarioConfig, base_vecs: np.ndarray, 
+    def __init__(self, config: ScenarioConfig, base_vecs: np.ndarray,
                  query_vecs: np.ndarray, seed: int):
         self.config = config
-        self.base_vecs = normalize_vectors(base_vecs)
-        self.query_vecs = normalize_vectors(query_vecs)
+        # DO NOT normalize - SIFT vectors should remain unnormalized
+        self.base_vecs = base_vecs
+        self.query_vecs = query_vecs
         self.seed = seed
         self.rng = np.random.default_rng(seed)
         random.seed(seed)
@@ -368,6 +369,7 @@ class ScenarioGenerator:
         # State tracking
         self.active_ids: Set[int] = set()
         self.insert_counter = 0
+        self.query_counter = 0  # For sequential query sampling
         self.stats = {'insert': 0, 'delete': 0, 'query': 0, 'failed_delete': 0}
         
         # Split base dataset
@@ -415,10 +417,12 @@ class ScenarioGenerator:
     
     def _create_query_event(self, t: int) -> Optional[Event]:
         """Create query event."""
-        query_idx = self.query_sampler.sample(len(self.query_vecs))
+        # Use sequential queries to align with ground truth
+        query_idx = self.query_counter % len(self.query_vecs)
         vec = self.query_vecs[query_idx]
+        self.query_counter += 1
         self.stats['query'] += 1
-        
+
         return Event(t=t, event_type='query', scenario=self.config.name, vec=vec.tolist())
     
     def generate(self, max_events: int) -> Tuple[List[Event], Dict]:

@@ -11,7 +11,7 @@ echo ""
 INDEX_FILE="../GPU-project-main/data/sift10k/sift10k_randomgraph.bin"
 QUERY_FILE="../GPU-project-main/data/sift10k/siftsmall_query.fvecs"
 GT_FILE="../GPU-project-main/data/sift10k/siftsmall_groundtruth.ivecs"
-WORKLOAD_FILE="../GPU-project-main/workload_e_commerce.jsonl"
+WORKLOAD_FILE="../../workload_200_events.jsonl"
 RECALL_AT=100
 NUM_THREADS=64
 

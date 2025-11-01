@@ -368,7 +368,15 @@ void processWorkload(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer* d
 
     // Compute recall if we have ground truth and query results
     if (ground_truth != nullptr && !all_query_results.empty() && total_queries_processed > 0) {
-        printf("[Recall] Computing accuracy for %u queries...\n", total_queries_processed);
+        // Only compute recall for queries that have ground truth
+        uint32_t num_queries_with_gt = (total_queries_processed < gt_dim) ? total_queries_processed : gt_dim;
+
+        if (num_queries_with_gt < total_queries_processed) {
+            printf("[Recall] Warning: Only %u queries have ground truth (out of %u processed)\n",
+                   num_queries_with_gt, total_queries_processed);
+        }
+
+        printf("[Recall] Computing accuracy for %u queries...\n", num_queries_with_gt);
 
         // Concatenate all query results into a single array
         uint32_t* all_results = (uint32_t*)malloc(total_queries_processed * recall_at * sizeof(uint32_t));
@@ -384,17 +392,30 @@ void processWorkload(StaticIndex* static_idx, FreshIndex* fresh, DeleteBuffer* d
             offset += batch_size;
         }
 
-        // Compute recall at different k values
+        // Debug: Print first query results
+        printf("[DEBUG] Query 0 results (top 10):");
+        for (int i = 0; i < 10; i++) {
+            printf(" %u", all_results[i]);
+        }
+        printf("\n");
+
+        printf("[DEBUG] Query 1 results (top 10):");
+        for (int i = 0; i < 10; i++) {
+            printf(" %u", all_results[recall_at + i]);
+        }
+        printf("\n");
+
+        // Compute recall at different k values (only for queries with ground truth)
         if (recall_at >= 1) {
-            metrics->recall_at_1 = calculate_recall(total_queries_processed, ground_truth, nullptr,
+            metrics->recall_at_1 = calculate_recall(num_queries_with_gt, ground_truth, nullptr,
                                                      gt_dim, all_results, recall_at, 1);
         }
         if (recall_at >= 10) {
-            metrics->recall_at_10 = calculate_recall(total_queries_processed, ground_truth, nullptr,
+            metrics->recall_at_10 = calculate_recall(num_queries_with_gt, ground_truth, nullptr,
                                                       gt_dim, all_results, recall_at, 10);
         }
         if (recall_at >= 100) {
-            metrics->recall_at_100 = calculate_recall(total_queries_processed, ground_truth, nullptr,
+            metrics->recall_at_100 = calculate_recall(num_queries_with_gt, ground_truth, nullptr,
                                                        gt_dim, all_results, recall_at, 100);
         }
 
