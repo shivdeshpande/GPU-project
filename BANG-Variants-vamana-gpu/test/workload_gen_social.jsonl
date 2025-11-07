@@ -1,0 +1,2 @@
+{"type":"metadata","scenario":"social_burst","description":"Burst of viral content followed by decay","total_events":100,"target_ratios":{"insert":0.5,"delete":0.05,"query":0.45},"actual_ratios":{"insert":0.5,"delete":0.05,"query":0.45},"stats":{"inserts":50,"deletes":5,"queries":45,"failed_deletes":0,"max_active_ids":45,"drift_sigma":0.06,"temporal_pattern":"burst_decay","drift_model":"directional","deletion_policy":"fifo","query_distribution":"zipfian","query_coupling":"semi_coupled"},"generated_at":"2025-11-07T20:47:18.554041","seed":456}
+{"t":
