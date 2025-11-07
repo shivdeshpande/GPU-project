@@ -1,0 +1,69 @@
+
+╔════════════════════════════════════════════╗
+║   FreshDiskANN Streaming Workload         ║
+╚════════════════════════════════════════════╝
+
+Graph loaded: 10000 points, 128 dimensions
+Loading workload: ../WORKLOAD_GENERATOR/test200.jsonl
+Workload Summary:
+  Scenario: e_commerce
+  Total events: 199
+    Inserts: 52 (26.1307%)
+    Deletes: 10 (5.02513%)
+    Queries: 137 (68.8442%)
+
+Configuration:
+  Alpha (α): 1.20
+  Consolidation threshold: 5.0%
+DeleteList initialized with capacity 10000
+
+Starting workload execution...
+
+Greedy search finished in 152 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 157 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 152 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 156 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 153 iterations.
+Greedy search finished in 153 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 152 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 152 iterations.
+Greedy search finished in 155 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 153 iterations.
+Greedy search finished in 152 iterations.
+Greedy search finished in 156 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 152 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 154 iterations.
+Greedy search finished in 152 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 151 iterations.
+Greedy search finished in 153 iterations.
+Greedy search finished in 152 iterations.
+Greedy search finished in 154 iterations.
