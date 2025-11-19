@@ -41,6 +41,26 @@ void insertPoint(uint8_t* d_graph,
                  unsigned medoid = MEDOID);
 
 /**
+ * Insert a single point with version-based concurrency control
+ *
+ * Uses version numbers for lock-free concurrent access.
+ * Multiple inserts can run in parallel safely.
+ *
+ * @param d_graph GPU graph structure
+ * @param d_versions Version array for lock-free access
+ * @param d_newVector New point vector (D dimensions)
+ * @param newPointId Point ID for the new point
+ * @param alpha α parameter for RobustPrune (typically 1.2)
+ * @param medoid Medoid node ID for search starting point
+ */
+void insertPointVersioned(uint8_t* d_graph,
+                          unsigned* d_versions,
+                          float* d_newVector,
+                          unsigned newPointId,
+                          float alpha,
+                          unsigned medoid = MEDOID);
+
+/**
  * Insert multiple points in batch (more efficient)
  *
  * @param d_graph GPU graph structure

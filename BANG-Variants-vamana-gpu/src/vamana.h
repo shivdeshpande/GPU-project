@@ -132,6 +132,53 @@ void greedySearch(uint8_t *d_graph,
                   unsigned searchL,
                   unsigned int *d_deleted = nullptr);
 
+// Version-based greedy search for concurrent safety
+void greedySearchVersioned(uint8_t *d_graph,
+                           unsigned *d_versions,
+                           float *d_queryVecs,
+                           unsigned *d_visitedSets,
+                           unsigned *d_visitedSetCount,
+                           unsigned batchStart,
+                           unsigned batchSize,
+                           unsigned searchL,
+                           unsigned int *d_deleted = nullptr);
+
+// Pre-allocated buffers for greedySearchVersioned to avoid per-query cudaMalloc
+struct GreedySearchBuffers {
+    bool *d_hasParent;
+    unsigned *d_parents;
+    bool *d_bloomFilters;
+    unsigned *d_neighbors;
+    unsigned *d_neighborsCount;
+    float *d_neighborDists;
+    unsigned *d_neighborsAux;
+    float *d_neighborDistsAux;
+    unsigned *d_worklist;
+    unsigned *d_worklistCount;
+    float *d_worklistDist;
+    bool *d_worklistVisited;
+    bool *d_nextIter;
+    bool *h_nextIter;    // Pinned host memory for async copy
+    unsigned batchSize;  // Size these were allocated for
+};
+
+// Allocate/free pre-allocated buffers (call once at startup per stream)
+void allocateGreedySearchBuffers(GreedySearchBuffers* buffers, unsigned batchSize);
+void freeGreedySearchBuffers(GreedySearchBuffers* buffers);
+
+// Version using pre-allocated buffers (much faster for repeated queries)
+void greedySearchVersionedPrealloc(uint8_t *d_graph,
+                                    unsigned *d_versions,
+                                    float *d_queryVecs,
+                                    unsigned *d_visitedSets,
+                                    unsigned *d_visitedSetCount,
+                                    unsigned batchStart,
+                                    unsigned batchSize,
+                                    unsigned searchL,
+                                    unsigned int *d_deleted,
+                                    GreedySearchBuffers* buffers,
+                                    cudaStream_t stream = 0);
+
 
 void computeOutNeighbors(uint8_t *d_graph,
                          float *d_queryVecs,
