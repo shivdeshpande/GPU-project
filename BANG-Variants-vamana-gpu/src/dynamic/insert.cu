@@ -348,3 +348,96 @@ void insertPointVersioned(uint8_t* d_graph,
     gpuErrchk(cudaFree(d_visitedSetCount));
     gpuErrchk(cudaFree(d_reverseEdgeIndex));
 }
+
+// ============== Pre-allocated Insert Functions ==============
+
+void allocateInsertBuffers(InsertBuffers* buffers) {
+    gpuErrchk(cudaMalloc(&buffers->d_visitedSet, MAX_PARENTS_PERQUERY * sizeof(unsigned)));
+    gpuErrchk(cudaMalloc(&buffers->d_visitedSetCount, sizeof(unsigned)));
+    gpuErrchk(cudaMalloc(&buffers->d_reverseEdgeIndex, N * reverseIndexEntrySize * sizeof(uint8_t)));
+
+    // Pre-allocate greedy search buffers (avoids 14 cudaMalloc per insert!)
+    allocateGreedySearchBuffers(&buffers->gsBuffers, 1);
+
+    // Pre-allocate out-neighbors buffers (avoids 9 cudaMalloc per insert!)
+    allocateOutNeighborsBuffers(&buffers->outNbrsBuffers, 1);
+
+    buffers->allocated = true;
+}
+
+void freeInsertBuffers(InsertBuffers* buffers) {
+    if (buffers->allocated) {
+        gpuErrchk(cudaFree(buffers->d_visitedSet));
+        gpuErrchk(cudaFree(buffers->d_visitedSetCount));
+        gpuErrchk(cudaFree(buffers->d_reverseEdgeIndex));
+
+        // Free greedy search buffers
+        freeGreedySearchBuffers(&buffers->gsBuffers);
+
+        // Free out-neighbors buffers
+        freeOutNeighborsBuffers(&buffers->outNbrsBuffers);
+
+        buffers->allocated = false;
+    }
+}
+
+void insertPointVersionedPrealloc(uint8_t* d_graph,
+                                   unsigned* d_versions,
+                                   float* d_newVector,
+                                   unsigned newPointId,
+                                   float alpha,
+                                   InsertBuffers* buffers,
+                                   cudaStream_t stream,
+                                   unsigned medoid) {
+
+    // Use pre-allocated buffers (no cudaMalloc overhead!)
+    unsigned* d_visitedSet = buffers->d_visitedSet;
+    unsigned* d_visitedSetCount = buffers->d_visitedSetCount;
+    uint8_t* d_reverseEdgeIndex = buffers->d_reverseEdgeIndex;
+
+    // Reset buffers async
+    gpuErrchk(cudaMemsetAsync(d_visitedSetCount, 0, sizeof(unsigned), stream));
+    gpuErrchk(cudaMemsetAsync(d_reverseEdgeIndex, 0, N * reverseIndexEntrySize * sizeof(uint8_t), stream));
+
+    // Step 1: Copy new vector into graph at newPointId position
+    copyVectorToGraph(d_graph, d_newVector, newPointId);
+
+    // Step 2: Run GreedySearch with pre-allocated buffers (avoids 14 cudaMalloc!)
+    greedySearchVersionedPrealloc(d_graph,
+                                   d_versions,
+                                   d_newVector,
+                                   d_visitedSet,
+                                   d_visitedSetCount,
+                                   newPointId,
+                                   1,  // batchSize = 1
+                                   L,  // searchL = L (default)
+                                   nullptr,  // d_deleted
+                                   &buffers->gsBuffers,
+                                   stream);
+
+    // Step 3: Compute out-neighbors with pre-allocated buffers (avoids 9 cudaMalloc!)
+    computeOutNeighborsPrealloc(d_graph,
+                                 d_newVector,
+                                 d_visitedSet,
+                                 d_visitedSetCount,
+                                 alpha,
+                                 d_reverseEdgeIndex,
+                                 newPointId,
+                                 1,  // batchSize = 1
+                                 &buffers->outNbrsBuffers,
+                                 stream);
+
+    // Mark the new point's write as complete
+    unsigned* h_version = &d_versions[newPointId];
+    cudaMemsetAsync(h_version, 0, sizeof(unsigned), stream);
+
+    // Step 4: Update reverse edges using version-protected kernel
+    unsigned threadsPerBlock = 256;
+    unsigned numBlocks = (N + threadsPerBlock - 1) / threadsPerBlock;
+
+    addReverseEdgesVersionedKernel<<<numBlocks, threadsPerBlock, 0, stream>>>(
+        d_graph, d_versions, d_reverseEdgeIndex,
+        graphEntrySize, reverseIndexEntrySize);
+
+    gpuErrchk(cudaStreamSynchronize(stream));
+}

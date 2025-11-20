@@ -61,6 +61,40 @@ void insertPointVersioned(uint8_t* d_graph,
                           unsigned medoid = MEDOID);
 
 /**
+ * Pre-allocated buffers for insert operations (avoid cudaMalloc per insert)
+ */
+struct InsertBuffers {
+    unsigned* d_visitedSet;
+    unsigned* d_visitedSetCount;
+    uint8_t* d_reverseEdgeIndex;
+    GreedySearchBuffers gsBuffers;       // Pre-allocated greedy search buffers
+    OutNeighborsBuffers outNbrsBuffers;  // Pre-allocated out-neighbors buffers
+    bool allocated;
+};
+
+/**
+ * Allocate insert buffers (call once at startup)
+ */
+void allocateInsertBuffers(InsertBuffers* buffers);
+
+/**
+ * Free insert buffers (call at shutdown)
+ */
+void freeInsertBuffers(InsertBuffers* buffers);
+
+/**
+ * Insert with pre-allocated buffers (much faster - no cudaMalloc overhead)
+ */
+void insertPointVersionedPrealloc(uint8_t* d_graph,
+                                   unsigned* d_versions,
+                                   float* d_newVector,
+                                   unsigned newPointId,
+                                   float alpha,
+                                   InsertBuffers* buffers,
+                                   cudaStream_t stream = 0,
+                                   unsigned medoid = MEDOID);
+
+/**
  * Insert multiple points in batch (more efficient)
  *
  * @param d_graph GPU graph structure

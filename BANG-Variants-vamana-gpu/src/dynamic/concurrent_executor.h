@@ -43,6 +43,7 @@ struct QueryStreamResources {
 struct InsertStreamResources {
     float* d_vector;             // Vector on GPU
     float* h_vector;             // Pinned host memory
+    InsertBuffers insertBuffers; // Pre-allocated insert buffers
     bool inUse;
 };
 
@@ -59,6 +60,19 @@ struct Operation {
 struct BatchQuery {
     std::vector<Operation> ops;
     unsigned count;
+};
+
+// Pre-allocated buffers for batch processing (avoid cudaMalloc per batch)
+struct BatchBuffers {
+    float* d_batchQueries;
+    unsigned* d_batchVisitedSets;
+    unsigned* d_batchVisitedCounts;
+    float* d_batchDists;
+    unsigned* d_batchVisitedAux;
+    float* d_batchDistsAux;
+    float* h_batchQueries;      // Pinned host memory
+    unsigned* h_batchResults;   // Pinned host memory
+    unsigned allocatedSize;     // Size these were allocated for
 };
 
 /**
@@ -214,6 +228,7 @@ private:
     std::mutex batchMutex;
     std::condition_variable batchCV;
     std::atomic<bool> batchReady{false};
+    BatchBuffers batchBuffers;  // Pre-allocated buffers for batch queries
 
     // Synchronization primitives
     std::mutex queueMutex;                  // Protects legacy queue operations

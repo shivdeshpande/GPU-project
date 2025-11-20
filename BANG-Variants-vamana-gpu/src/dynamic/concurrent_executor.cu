@@ -75,6 +75,18 @@ ConcurrentExecutor::ConcurrentExecutor(uint8_t* d_graph,
     // Initialize pre-allocated memory pools
     initializeStreamResources();
 
+    // Pre-allocate batch buffers (avoid cudaMalloc per batch)
+    batchBuffers.allocatedSize = BATCH_SIZE;
+    cudaMalloc(&batchBuffers.d_batchQueries, BATCH_SIZE * D * sizeof(float));
+    cudaMalloc(&batchBuffers.d_batchVisitedSets, BATCH_SIZE * MAX_PARENTS_PERQUERY * sizeof(unsigned));
+    cudaMalloc(&batchBuffers.d_batchVisitedCounts, BATCH_SIZE * sizeof(unsigned));
+    cudaMalloc(&batchBuffers.d_batchDists, BATCH_SIZE * MAX_PARENTS_PERQUERY * sizeof(float));
+    cudaMalloc(&batchBuffers.d_batchVisitedAux, BATCH_SIZE * MAX_PARENTS_PERQUERY * sizeof(unsigned));
+    cudaMalloc(&batchBuffers.d_batchDistsAux, BATCH_SIZE * MAX_PARENTS_PERQUERY * sizeof(float));
+    cudaMallocHost(&batchBuffers.h_batchQueries, BATCH_SIZE * D * sizeof(float));
+    cudaMallocHost(&batchBuffers.h_batchResults, BATCH_SIZE * k * sizeof(unsigned));
+    printf("  - Pre-allocated batch buffers for %d queries\n", BATCH_SIZE);
+
     // Initialize lock-free queues
     insertQueueLF = new LockFreeQueue<Operation>(QUEUE_CAPACITY);
     deleteQueueLF = new LockFreeQueue<Operation>(QUEUE_CAPACITY);
@@ -103,10 +115,10 @@ ConcurrentExecutor::ConcurrentExecutor(uint8_t* d_graph,
         workers.emplace_back(&ConcurrentExecutor::deleteWorker, this);
     }
 
-    // Query workers - fully parallel
-    for (unsigned i = 0; i < queryWorkers; i++) {
-        workers.emplace_back(&ConcurrentExecutor::queryWorker, this);
-    }
+    // Batch worker - collects queries and processes them in batches for better GPU utilization
+    // Use single batchWorker since it batches queries for parallel GPU execution
+    workers.emplace_back(&ConcurrentExecutor::batchWorker, this);
+    printf("  (Using batch processing with size %d for queries)\n", BATCH_SIZE);
 
     printf("Started %zu workers: %u insert, %u delete, %u query\n",
            workers.size(), insertWorkers, deleteWorkers, queryWorkers);
@@ -128,6 +140,16 @@ ConcurrentExecutor::~ConcurrentExecutor() {
 
     // Free pre-allocated memory pools
     freeStreamResources();
+
+    // Free batch buffers
+    cudaFree(batchBuffers.d_batchQueries);
+    cudaFree(batchBuffers.d_batchVisitedSets);
+    cudaFree(batchBuffers.d_batchVisitedCounts);
+    cudaFree(batchBuffers.d_batchDists);
+    cudaFree(batchBuffers.d_batchVisitedAux);
+    cudaFree(batchBuffers.d_batchDistsAux);
+    cudaFreeHost(batchBuffers.h_batchQueries);
+    cudaFreeHost(batchBuffers.h_batchResults);
 
     // Free version array
     freeVersions(d_versions);
@@ -348,10 +370,9 @@ void ConcurrentExecutor::processInsert(const Operation& op) {
     cudaMemcpyAsync(res.d_vector, res.h_vector, D * sizeof(float),
                     cudaMemcpyHostToDevice, stream);
 
-    // Insert point with version-based concurrency control
-    insertPointVersioned(d_graph, d_versions, res.d_vector, op.event.pointId, alpha);
-
-    cudaStreamSynchronize(stream);
+    // Insert point with pre-allocated buffers (avoids cudaMalloc overhead!)
+    insertPointVersionedPrealloc(d_graph, d_versions, res.d_vector, op.event.pointId,
+                                  alpha, &res.insertBuffers, stream);
 
     auto end = std::chrono::high_resolution_clock::now();
     double timeMs = std::chrono::duration<double, std::milli>(end - start).count();
@@ -557,6 +578,9 @@ void ConcurrentExecutor::initializeStreamResources() {
         cudaMalloc(&res.d_vector, D * sizeof(float));
         cudaMallocHost(&res.h_vector, D * sizeof(float));
 
+        // Pre-allocate insert buffers (avoids ~20MB cudaMalloc per insert!)
+        allocateInsertBuffers(&res.insertBuffers);
+
         res.inUse = false;
     }
 }
@@ -586,6 +610,9 @@ void ConcurrentExecutor::freeStreamResources() {
 
         cudaFree(res.d_vector);
         cudaFreeHost(res.h_vector);
+
+        // Free pre-allocated insert buffers
+        freeInsertBuffers(&res.insertBuffers);
     }
 }
 
@@ -645,22 +672,15 @@ void ConcurrentExecutor::processBatchQueries(std::vector<Operation>& batch) {
 
     unsigned batchSize = batch.size();
 
-    // Allocate batch resources
-    float* d_batchQueries;
-    unsigned* d_batchVisitedSets;
-    unsigned* d_batchVisitedCounts;
-    float* d_batchDists;
-
-    cudaMalloc(&d_batchQueries, batchSize * D * sizeof(float));
-    cudaMalloc(&d_batchVisitedSets, batchSize * MAX_PARENTS_PERQUERY * sizeof(unsigned));
-    cudaMalloc(&d_batchVisitedCounts, batchSize * sizeof(unsigned));
-    cudaMalloc(&d_batchDists, batchSize * MAX_PARENTS_PERQUERY * sizeof(float));
-
-    // Use pinned memory for batch transfers
-    float* h_batchQueries;
-    unsigned* h_batchResults;
-    cudaMallocHost(&h_batchQueries, batchSize * D * sizeof(float));
-    cudaMallocHost(&h_batchResults, batchSize * k * sizeof(unsigned));
+    // Use pre-allocated buffers (no cudaMalloc overhead!)
+    float* d_batchQueries = batchBuffers.d_batchQueries;
+    unsigned* d_batchVisitedSets = batchBuffers.d_batchVisitedSets;
+    unsigned* d_batchVisitedCounts = batchBuffers.d_batchVisitedCounts;
+    float* d_batchDists = batchBuffers.d_batchDists;
+    unsigned* d_batchVisitedAux = batchBuffers.d_batchVisitedAux;
+    float* d_batchDistsAux = batchBuffers.d_batchDistsAux;
+    float* h_batchQueries = batchBuffers.h_batchQueries;
+    unsigned* h_batchResults = batchBuffers.h_batchResults;
 
     // Prepare all queries in batch
     for (unsigned i = 0; i < batchSize; i++) {
@@ -686,52 +706,22 @@ void ConcurrentExecutor::processBatchQueries(std::vector<Operation>& batch) {
 
     unsigned* d_deleted = deleteList->getDevicePointer();
 
-    // Process each query in batch using different streams
-    for (unsigned i = 0; i < batchSize; i++) {
-        int streamIdx = i % NUM_QUERY_STREAMS;
-        cudaStream_t stream = queryStreams[streamIdx];
+    // TRUE GPU BATCHING: Single call with batchSize blocks - all queries process in parallel!
+    greedySearchVersioned(d_graph, d_versions, d_batchQueries, d_batchVisitedSets,
+                          d_batchVisitedCounts, 0, batchSize, searchL, d_deleted);
 
-        float* d_queryVec = d_batchQueries + i * D;
-        unsigned* d_visitedSet = d_batchVisitedSets + i * MAX_PARENTS_PERQUERY;
-        unsigned* d_visitedCount = d_batchVisitedCounts + i;
-        float* d_dists = d_batchDists + i * MAX_PARENTS_PERQUERY;
+    // Batched distance computation and sorting - all queries in parallel
+    computeDists<<<batchSize, R*8>>>(
+        d_graph, d_batchVisitedSets, d_batchVisitedCounts,
+        d_batchQueries, d_batchDists, MAX_PARENTS_PERQUERY);
 
-        // GreedySearch for this query
-        greedySearchVersioned(d_graph, d_versions, d_queryVec, d_visitedSet,
-                              d_visitedCount, 0, 1, searchL, d_deleted);
-    }
+    sortByDistance<<<batchSize, MAX_PARENTS_PERQUERY, MAX_PARENTS_PERQUERY * sizeof(unsigned)>>>(
+        d_batchVisitedSets, d_batchVisitedCounts, d_batchDists,
+        d_batchVisitedAux, d_batchDistsAux, MAX_PARENTS_PERQUERY);
 
-    // Synchronize all streams
-    for (int i = 0; i < NUM_QUERY_STREAMS; i++) {
-        cudaStreamSynchronize(queryStreams[i]);
-    }
+    cudaDeviceSynchronize();
 
-    // Compute distances and sort for all queries
-    for (unsigned i = 0; i < batchSize; i++) {
-        int streamIdx = i % NUM_QUERY_STREAMS;
-        cudaStream_t stream = queryStreams[streamIdx];
-        QueryStreamResources& res = queryResources[streamIdx];
-
-        float* d_queryVec = d_batchQueries + i * D;
-        unsigned* d_visitedSet = d_batchVisitedSets + i * MAX_PARENTS_PERQUERY;
-        unsigned* d_visitedCount = d_batchVisitedCounts + i;
-        float* d_dists = d_batchDists + i * MAX_PARENTS_PERQUERY;
-
-        computeDists<<<1, MAX_PARENTS_PERQUERY, 0, stream>>>(
-            d_graph, d_visitedSet, d_visitedCount,
-            d_queryVec, d_dists, MAX_PARENTS_PERQUERY);
-
-        sortByDistance<<<1, MAX_PARENTS_PERQUERY, MAX_PARENTS_PERQUERY * sizeof(unsigned), stream>>>(
-            d_visitedSet, d_visitedCount, d_dists,
-            res.d_visitedSetAux, res.d_visitedSetDistsAux, MAX_PARENTS_PERQUERY);
-    }
-
-    // Synchronize and copy results
-    for (int i = 0; i < NUM_QUERY_STREAMS; i++) {
-        cudaStreamSynchronize(queryStreams[i]);
-    }
-
-    // Copy all results back
+    // Copy all results back in one transfer
     for (unsigned i = 0; i < batchSize; i++) {
         unsigned* d_visitedSet = d_batchVisitedSets + i * MAX_PARENTS_PERQUERY;
         cudaMemcpy(h_batchResults + i * k, d_visitedSet, k * sizeof(unsigned),
@@ -757,13 +747,7 @@ void ConcurrentExecutor::processBatchQueries(std::vector<Operation>& batch) {
         stats.addQuery(avgTimeMs, recall5, recall10);
     }
 
-    // Cleanup
-    cudaFree(d_batchQueries);
-    cudaFree(d_batchVisitedSets);
-    cudaFree(d_batchVisitedCounts);
-    cudaFree(d_batchDists);
-    cudaFreeHost(h_batchQueries);
-    cudaFreeHost(h_batchResults);
+    // No cleanup needed - using pre-allocated buffers
 }
 
 void ConcurrentExecutor::batchWorker() {
@@ -771,23 +755,28 @@ void ConcurrentExecutor::batchWorker() {
     localBatch.reserve(BATCH_SIZE);
 
     while (running) {
-        {
-            std::unique_lock<std::mutex> lock(batchMutex);
+        // Collect queries from lock-free queue until batch is full or timeout
+        Operation op;
+        auto batchStart = std::chrono::steady_clock::now();
+        const auto timeout = std::chrono::milliseconds(2);  // 2ms timeout for batching
 
-            // Wait for batch to fill or timeout
-            batchCV.wait_for(lock, std::chrono::milliseconds(5), [this] {
-                return queryBatch.size() >= BATCH_SIZE || !running;
-            });
-
-            if (!running && queryBatch.empty()) break;
-
-            // Take available queries (up to BATCH_SIZE)
-            unsigned toTake = std::min((unsigned)queryBatch.size(), (unsigned)BATCH_SIZE);
-            if (toTake > 0) {
-                localBatch.assign(queryBatch.begin(), queryBatch.begin() + toTake);
-                queryBatch.erase(queryBatch.begin(), queryBatch.begin() + toTake);
+        while (localBatch.size() < BATCH_SIZE) {
+            if (queryQueueLF->tryPop(op)) {
+                localBatch.push_back(op);
+            } else {
+                // Check timeout
+                auto elapsed = std::chrono::steady_clock::now() - batchStart;
+                if (elapsed > timeout && !localBatch.empty()) {
+                    break;  // Process what we have
+                }
+                if (elapsed > timeout && localBatch.empty() && !running) {
+                    break;  // Exit condition
+                }
+                std::this_thread::yield();
             }
         }
+
+        if (!running && localBatch.empty()) break;
 
         if (!localBatch.empty()) {
             // Wait if consolidation is in progress

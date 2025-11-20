@@ -340,3 +340,107 @@ void computeOutNeighbors(uint8_t *d_graph,
 
     // printf("Out neighbor pruning finished in %d iterations.\n", iter);
 }
+
+// ============== Pre-allocated OutNeighbors Functions ==============
+
+void allocateOutNeighborsBuffers(OutNeighborsBuffers* buffers, unsigned batchSize) {
+    buffers->batchSize = batchSize;
+
+    gpuErrchk(cudaMalloc(&buffers->d_visitedSetDists, batchSize * MAX_PARENTS_PERQUERY * sizeof(float)));
+    gpuErrchk(cudaMalloc(&buffers->d_visitedSetAux, batchSize * MAX_PARENTS_PERQUERY * sizeof(unsigned)));
+    gpuErrchk(cudaMalloc(&buffers->d_visitedSetDistsAux, batchSize * MAX_PARENTS_PERQUERY * sizeof(float)));
+    gpuErrchk(cudaMalloc(&buffers->d_visitedSetStatus, batchSize * MAX_PARENTS_PERQUERY * sizeof(NodeState)));
+
+    gpuErrchk(cudaMalloc(&buffers->d_neighbors, batchSize * (R+1) * sizeof(unsigned)));
+    gpuErrchk(cudaMalloc(&buffers->d_neighborsCount, batchSize * sizeof(unsigned)));
+    gpuErrchk(cudaMalloc(&buffers->d_neighborsDists, batchSize * (R+1) * sizeof(float)));
+    gpuErrchk(cudaMalloc(&buffers->d_neighborsAux, batchSize * (R+1) * sizeof(unsigned)));
+    gpuErrchk(cudaMalloc(&buffers->d_neighborsDistsAux, batchSize * (R+1) * sizeof(float)));
+}
+
+void freeOutNeighborsBuffers(OutNeighborsBuffers* buffers) {
+    gpuErrchk(cudaFree(buffers->d_visitedSetDists));
+    gpuErrchk(cudaFree(buffers->d_visitedSetAux));
+    gpuErrchk(cudaFree(buffers->d_visitedSetDistsAux));
+    gpuErrchk(cudaFree(buffers->d_visitedSetStatus));
+
+    gpuErrchk(cudaFree(buffers->d_neighbors));
+    gpuErrchk(cudaFree(buffers->d_neighborsCount));
+    gpuErrchk(cudaFree(buffers->d_neighborsDists));
+    gpuErrchk(cudaFree(buffers->d_neighborsAux));
+    gpuErrchk(cudaFree(buffers->d_neighborsDistsAux));
+}
+
+void computeOutNeighborsPrealloc(uint8_t *d_graph,
+                                  float *d_queryVecs,
+                                  unsigned *d_visitedSets,
+                                  unsigned *d_visitedSetCount,
+                                  float alpha,
+                                  uint8_t *d_reverseEdgeIndex,
+                                  unsigned batchStart,
+                                  unsigned batchSize,
+                                  OutNeighborsBuffers* buffers,
+                                  cudaStream_t stream) {
+
+    // Use pre-allocated buffers (no cudaMalloc overhead!)
+    float *d_visitedSetDists = buffers->d_visitedSetDists;
+    unsigned *d_visitedSetAux = buffers->d_visitedSetAux;
+    float *d_visitedSetDistsAux = buffers->d_visitedSetDistsAux;
+    NodeState *d_visitedSetStatus = buffers->d_visitedSetStatus;
+    unsigned *d_neighbors = buffers->d_neighbors;
+    unsigned *d_neighborsCount = buffers->d_neighborsCount;
+    float *d_neighborsDists = buffers->d_neighborsDists;
+    unsigned *d_neighborsAux = buffers->d_neighborsAux;
+    float *d_neighborsDistsAux = buffers->d_neighborsDistsAux;
+
+    getNeighbors<<<batchSize, R, 0, stream>>>(d_graph,
+                                              batchStart,
+                                              d_neighbors,
+                                              d_neighborsCount);
+
+    computeDists<<<batchSize, R*8, 0, stream>>>(d_graph,
+                                                 d_neighbors,
+                                                 d_neighborsCount,
+                                                 d_queryVecs,
+                                                 d_neighborsDists,
+                                                 (R+1));
+
+    sortByDistance<<<batchSize, R+1, (R+1)*sizeof(unsigned), stream>>>(d_neighbors,
+                                                                        d_neighborsCount,
+                                                                        d_neighborsDists,
+                                                                        d_neighborsAux,
+                                                                        d_neighborsDistsAux,
+                                                                        R+1);
+
+    computeDists<<<batchSize, 1024, 0, stream>>>(d_graph,
+                                                  d_visitedSets,
+                                                  d_visitedSetCount,
+                                                  d_queryVecs,
+                                                  d_visitedSetDists,
+                                                  MAX_PARENTS_PERQUERY);
+
+    sortByDistance<<<batchSize, MAX_PARENTS_PERQUERY,
+                     MAX_PARENTS_PERQUERY*sizeof(unsigned), stream>>>(d_visitedSets,
+                                                                       d_visitedSetCount,
+                                                                       d_visitedSetDists,
+                                                                       d_visitedSetAux,
+                                                                       d_visitedSetDistsAux,
+                                                                       MAX_PARENTS_PERQUERY);
+
+    mergeIntoVisitedSet<<<batchSize, MAX_PARENTS_PERQUERY + R, 0, stream>>>(d_visitedSetCount,
+                                                                             d_visitedSets,
+                                                                             d_visitedSetDists,
+                                                                             d_neighborsCount,
+                                                                             d_neighbors,
+                                                                             d_neighborsDists);
+
+    pruneOutNeighbors<<<batchSize, MAX_PARENTS_PERQUERY, 0, stream>>>(d_graph,
+                                                                       batchStart,
+                                                                       d_visitedSets,
+                                                                       d_visitedSetCount,
+                                                                       d_visitedSetDists,
+                                                                       d_visitedSetStatus,
+                                                                       d_queryVecs,
+                                                                       d_reverseEdgeIndex,
+                                                                       alpha);
+}

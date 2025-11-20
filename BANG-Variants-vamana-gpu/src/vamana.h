@@ -162,6 +162,20 @@ struct GreedySearchBuffers {
     unsigned batchSize;  // Size these were allocated for
 };
 
+// Pre-allocated buffers for computeOutNeighbors to avoid cudaMalloc overhead
+struct OutNeighborsBuffers {
+    float *d_visitedSetDists;
+    unsigned *d_visitedSetAux;
+    float *d_visitedSetDistsAux;
+    NodeState *d_visitedSetStatus;
+    unsigned *d_neighbors;
+    unsigned *d_neighborsCount;
+    float *d_neighborsDists;
+    unsigned *d_neighborsAux;
+    float *d_neighborsDistsAux;
+    unsigned batchSize;  // Size these were allocated for
+};
+
 // Allocate/free pre-allocated buffers (call once at startup per stream)
 void allocateGreedySearchBuffers(GreedySearchBuffers* buffers, unsigned batchSize);
 void freeGreedySearchBuffers(GreedySearchBuffers* buffers);
@@ -188,6 +202,22 @@ void computeOutNeighbors(uint8_t *d_graph,
                          uint8_t *d_reverseEdgeIndex,
                          unsigned batchStart,
                          unsigned batchSize);
+
+// Allocate/free OutNeighbors buffers
+void allocateOutNeighborsBuffers(OutNeighborsBuffers* buffers, unsigned batchSize);
+void freeOutNeighborsBuffers(OutNeighborsBuffers* buffers);
+
+// Pre-allocated version (much faster - no cudaMalloc overhead)
+void computeOutNeighborsPrealloc(uint8_t *d_graph,
+                                  float *d_queryVecs,
+                                  unsigned *d_visitedSets,
+                                  unsigned *d_visitedSetCount,
+                                  float alpha,
+                                  uint8_t *d_reverseEdgeIndex,
+                                  unsigned batchStart,
+                                  unsigned batchSize,
+                                  OutNeighborsBuffers* buffers,
+                                  cudaStream_t stream = 0);
 
 
 void computeReverseEdges(uint8_t *d_graph,

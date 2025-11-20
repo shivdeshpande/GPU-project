@@ -1,9 +1,14 @@
 #include <time.h>
 #include <stdlib.h>
+#include <cub/cub.cuh>
 
 #ifndef VAMANA_H
 #include "vamana.h"
 #endif
+
+// Define WarpReduce for 8 threads (matching our thread-per-dimension pattern)
+#define THREADS_PER_NEIGHBOR 8
+typedef cub::WarpReduce<float, THREADS_PER_NEIGHBOR> WarpReduce8;
 
 void generateRandomGraph(uint8_t *graph, unsigned batchStart, unsigned batchSize) {
     srand(0);
@@ -29,6 +34,9 @@ __global__ void computeDists(uint8_t *d_graph,
     unsigned offset = rowSize * queryID;
     unsigned numNodes = d_nodeCount[queryID];
 
+    // Shared memory for WarpReduce - one per possible neighbor
+    __shared__ typename WarpReduce8::TempStorage temp_storage[R+1];
+
     // Initialize distances to zero
     for (unsigned i = tid; i < numNodes; i += blockDim.x) {
         d_dists[offset + i] = 0;
@@ -36,34 +44,29 @@ __global__ void computeDists(uint8_t *d_graph,
 
     __syncthreads();
 
-    // if (queryID == 0 & tid == 0) printf("NumNodes: %d\n", numNodes);
+    // Assign 8 threads to each node - use WarpReduce instead of atomicAdd
+    unsigned neighborIdx = tid / THREADS_PER_NEIGHBOR;
+    unsigned dimOffset = tid % THREADS_PER_NEIGHBOR;
 
-    // Assign 8 threads to each node
-    for (unsigned j = tid/8; j < numNodes; j += (blockDim.x + 7) / 8) {
+    for (unsigned j = neighborIdx; j < numNodes; j += blockDim.x / THREADS_PER_NEIGHBOR) {
         unsigned node = d_nodes[offset + j];
         float *nodeVec = (float*)(d_graph + graphEntrySize*node); // Pointer to node vector
         float sum = 0;
 
-        // Sum up 8 dimensions in parallel
-        for (unsigned i = tid%8; i < D; i += 8) {
+        // Each of 8 threads computes D/8 dimensions
+        for (unsigned i = dimOffset; i < D; i += THREADS_PER_NEIGHBOR) {
             float diff = nodeVec[i] - queryVec[i];
             sum += diff * diff;
         }
-        atomicAdd(&d_dists[offset + j], sum);
-    }
 
-    /*
-    for (unsigned j = tid; j < numNodes; j += blockDim.x) {
-        unsigned node = d_nodes[offset + j];
-        float *nodeVec = (float*)(d_graph + graphEntrySize*node); // Pointer to node vector
-        float sum = 0;
-        for (int i = 0; i < D; i++) {
-            float diff = nodeVec[i] - queryVec[i];
-            sum += diff * diff;
+        // Use CUB WarpReduce - much faster than atomicAdd (3 cycles vs 30 cycles)
+        float totalDist = WarpReduce8(temp_storage[j % (R+1)]).Sum(sum);
+
+        // Only thread 0 of each 8-thread group writes the result
+        if (dimOffset == 0) {
+            d_dists[offset + j] = totalDist;
         }
-        atomicAdd(&d_dists[offset + j], sum);
     }
-    */    
 }
 
 __device__ unsigned lowerBound(float arr[], unsigned lo, unsigned hi, float target) {
