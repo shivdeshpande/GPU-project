@@ -37,9 +37,27 @@ __global__ void computeAllDistancesKernel(uint8_t* graph, float* queryVec,
     distances[tid] = dist;
 }
 
+// BANG-STYLE GPU kernel: Gather queries from GPU-resident d_allQueries
+// Eliminates host-device memcpy!
+__global__ void gatherQueries(float* d_allQueries, unsigned* d_queryIds,
+                               float* d_batchQueries, unsigned batchSize) {
+    unsigned tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= batchSize) return;
+
+    unsigned queryId = d_queryIds[tid];
+    float* src = d_allQueries + queryId * D;
+    float* dst = d_batchQueries + tid * D;
+
+    // Copy query vector
+    for (unsigned d = 0; d < D; d++) {
+        dst[d] = src[d];
+    }
+}
+
 ConcurrentExecutor::ConcurrentExecutor(uint8_t* d_graph,
                                        DeleteList* deleteList,
                                        float* h_queries,
+                                       unsigned numQueries,
                                        unsigned* h_groundtruth,
                                        unsigned gtK,
                                        unsigned k,
@@ -49,9 +67,27 @@ ConcurrentExecutor::ConcurrentExecutor(uint8_t* d_graph,
                                        unsigned numWorkers,
                                        bool useBackgroundConsolidation)
     : d_graph(d_graph), deleteList(deleteList), h_queries(h_queries),
-      h_groundtruth(h_groundtruth), gtK(gtK), k(k), searchL(searchL),
+      numQueriesLoaded(numQueries), h_groundtruth(h_groundtruth), gtK(gtK), k(k), searchL(searchL),
       alpha(alpha), consolidateThresh(consolidateThresh),
       useBackgroundConsolidation(useBackgroundConsolidation) {
+
+    // BANG-STYLE OPTIMIZATION 1: Pre-load ALL queries to GPU (eliminate per-batch memcpy!)
+    d_allQueries = nullptr;
+    d_allResults = nullptr;
+
+    if (h_queries != nullptr && numQueries > 0) {
+        printf("[BANG Optimization] Pre-loading %u queries to GPU...\n", numQueries);
+        cudaMalloc(&d_allQueries, numQueries * D * sizeof(float));
+        cudaMemcpy(d_allQueries, h_queries, numQueries * D * sizeof(float),
+                   cudaMemcpyHostToDevice);
+
+        // Pre-allocate result buffer on GPU
+        cudaMalloc(&d_allResults, numQueries * k * sizeof(unsigned));
+        printf("  ✓ All queries loaded to GPU (%.2f MB)\n",
+               (numQueries * D * sizeof(float)) / 1024.0 / 1024.0);
+        printf("  ✓ Result buffer allocated on GPU (%.2f MB)\n",
+               (numQueries * k * sizeof(unsigned)) / 1024.0 / 1024.0);
+    }
 
     // Allocate version array for lock-free access
     allocateVersions(&d_versions, N);
@@ -85,6 +121,8 @@ ConcurrentExecutor::ConcurrentExecutor(uint8_t* d_graph,
     cudaMalloc(&batchBuffers.d_batchDistsAux, BATCH_SIZE * MAX_PARENTS_PERQUERY * sizeof(float));
     cudaMallocHost(&batchBuffers.h_batchQueries, BATCH_SIZE * D * sizeof(float));
     cudaMallocHost(&batchBuffers.h_batchResults, BATCH_SIZE * k * sizeof(unsigned));
+    cudaMalloc(&batchBuffers.d_queryIds, BATCH_SIZE * sizeof(unsigned));
+    cudaMallocHost(&batchBuffers.h_queryIds, BATCH_SIZE * sizeof(unsigned));
     printf("  - Pre-allocated batch buffers for %d queries\n", BATCH_SIZE);
 
     // Initialize lock-free queues
@@ -103,7 +141,7 @@ ConcurrentExecutor::ConcurrentExecutor(uint8_t* d_graph,
     // Calculate worker distribution based on numWorkers
     unsigned insertWorkers = std::max(1u, numWorkers / 4);      // ~25% for inserts
     unsigned deleteWorkers = 1;                                   // 1 for deletes (fast)
-    unsigned queryWorkers = numWorkers - insertWorkers - deleteWorkers;  // Rest for queries
+    unsigned queryWorkers = 1;  // Single batch worker collects larger batches
 
     // Insert workers - can run in parallel for different point IDs
     for (unsigned i = 0; i < insertWorkers; i++) {
@@ -115,12 +153,14 @@ ConcurrentExecutor::ConcurrentExecutor(uint8_t* d_graph,
         workers.emplace_back(&ConcurrentExecutor::deleteWorker, this);
     }
 
-    // Batch worker - collects queries and processes them in batches for better GPU utilization
-    // Use single batchWorker since it batches queries for parallel GPU execution
-    workers.emplace_back(&ConcurrentExecutor::batchWorker, this);
-    printf("  (Using batch processing with size %d for queries)\n", BATCH_SIZE);
+    // Batch workers - multiple workers collect and process queries in batches for better GPU utilization
+    // Multiple batchWorkers allow parallel batch processing for higher throughput
+    for (unsigned i = 0; i < queryWorkers; i++) {
+        workers.emplace_back(&ConcurrentExecutor::batchWorker, this);
+    }
+    printf("  (Using %u batch workers with batch size %d for queries)\n", queryWorkers, BATCH_SIZE);
 
-    printf("Started %zu workers: %u insert, %u delete, %u query\n",
+    printf("Started %zu workers: %u insert, %u delete, %u query/batch\n",
            workers.size(), insertWorkers, deleteWorkers, queryWorkers);
 }
 
@@ -150,6 +190,12 @@ ConcurrentExecutor::~ConcurrentExecutor() {
     cudaFree(batchBuffers.d_batchDistsAux);
     cudaFreeHost(batchBuffers.h_batchQueries);
     cudaFreeHost(batchBuffers.h_batchResults);
+    cudaFree(batchBuffers.d_queryIds);
+    cudaFreeHost(batchBuffers.h_queryIds);
+
+    // Free GPU-resident queries and results
+    if (d_allQueries) cudaFree(d_allQueries);
+    if (d_allResults) cudaFree(d_allResults);
 
     // Free version array
     freeVersions(d_versions);
@@ -306,24 +352,64 @@ void ConcurrentExecutor::insertWorker() {
     }
 }
 
+// BANG-STYLE Batch Delete Worker - collect many deletes and process together
 void ConcurrentExecutor::deleteWorker() {
-    while (running) {
-        Operation op;
+    std::vector<Operation> localBatch;
+    const unsigned DELETE_BATCH_SIZE = 100;  // Collect 100 deletes at a time
+    localBatch.reserve(DELETE_BATCH_SIZE);
 
-        // Try to pop from lock-free queue
-        if (deleteQueueLF->tryPop(op)) {
-            // Wait if consolidation is in progress
+    while (running) {
+        // Collect deletes until batch is full or timeout
+        Operation op;
+        auto batchStart = std::chrono::steady_clock::now();
+        const auto timeout = std::chrono::milliseconds(2);  // 2ms timeout
+
+        while (localBatch.size() < DELETE_BATCH_SIZE) {
+            if (deleteQueueLF->tryPop(op)) {
+                localBatch.push_back(op);
+            } else {
+                auto elapsed = std::chrono::steady_clock::now() - batchStart;
+                if (elapsed > timeout) {
+                    break;  // Process what we have or continue if empty
+                }
+                std::this_thread::sleep_for(std::chrono::microseconds(100));
+            }
+        }
+
+        // Process collected batch
+        if (!localBatch.empty()) {
             while (consolidating) {
                 std::this_thread::sleep_for(std::chrono::microseconds(100));
             }
 
-            activeOps++;
-            processDelete(op);
-            activeOps--;
-            pendingOps--;
-        } else {
-            // No work, yield to avoid busy-waiting
-            std::this_thread::yield();
+            activeOps += localBatch.size();
+
+            auto start = std::chrono::high_resolution_clock::now();
+
+            // Extract point IDs to delete
+            unsigned* h_pointIds = (unsigned*)malloc(localBatch.size() * sizeof(unsigned));
+            for (unsigned i = 0; i < localBatch.size(); i++) {
+                h_pointIds[i] = localBatch[i].event.pointId;
+            }
+
+            // BANG-STYLE: Batch mark all deletes in one GPU call
+            deleteList->batchMarkDeleted(h_pointIds, localBatch.size());
+
+            free(h_pointIds);
+
+            auto end = std::chrono::high_resolution_clock::now();
+            double totalTimeMs = std::chrono::duration<double, std::milli>(end - start).count();
+            double avgTimeMs = totalTimeMs / localBatch.size();
+
+            // Update stats
+            for (unsigned i = 0; i < localBatch.size(); i++) {
+                stats.addDelete(avgTimeMs);
+            }
+
+            activeOps -= localBatch.size();
+            pendingOps -= localBatch.size();
+
+            localBatch.clear();
         }
     }
 }
@@ -679,29 +765,49 @@ void ConcurrentExecutor::processBatchQueries(std::vector<Operation>& batch) {
     float* d_batchDists = batchBuffers.d_batchDists;
     unsigned* d_batchVisitedAux = batchBuffers.d_batchVisitedAux;
     float* d_batchDistsAux = batchBuffers.d_batchDistsAux;
-    float* h_batchQueries = batchBuffers.h_batchQueries;
     unsigned* h_batchResults = batchBuffers.h_batchResults;
 
-    // Prepare all queries in batch
-    for (unsigned i = 0; i < batchSize; i++) {
-        const Operation& op = batch[i];
-        float* queryDst = h_batchQueries + i * D;
-
-        if (!op.event.vector.empty()) {
-            for (unsigned j = 0; j < D && j < op.event.vector.size(); j++) {
-                queryDst[j] = op.event.vector[j];
-            }
-            for (unsigned j = op.event.vector.size(); j < D; j++) {
-                queryDst[j] = 0.0f;
-            }
-        } else if (h_queries != nullptr) {
-            memcpy(queryDst, h_queries + op.event.queryId * D, D * sizeof(float));
+    // BANG-STYLE OPTIMIZATION: Use GPU-resident queries (NO MEMCPY!)
+    if (d_allQueries != nullptr) {
+        // All queries are already on GPU! Just use them directly
+        // Extract query IDs using pre-allocated pinned memory
+        unsigned* h_queryIds = batchBuffers.h_queryIds;
+        for (unsigned i = 0; i < batchSize; i++) {
+            h_queryIds[i] = batch[i].event.queryId;
         }
+
+        unsigned* d_queryIds = batchBuffers.d_queryIds;
+        cudaMemcpy(d_queryIds, h_queryIds, batchSize * sizeof(unsigned), cudaMemcpyHostToDevice);
+
+        // GPU kernel: Gather queries from d_allQueries using query IDs
+        unsigned threadsPerBlock = 256;
+        unsigned numBlocks = (batchSize + threadsPerBlock - 1) / threadsPerBlock;
+        gatherQueries<<<numBlocks, threadsPerBlock>>>(
+            d_allQueries, d_queryIds, d_batchQueries, batchSize
+        );
+        // No cudaFree needed - using pre-allocated buffers!
+    } else {
+        // Fallback: Original method with memcpy
+        float* h_batchQueries = batchBuffers.h_batchQueries;
+        for (unsigned i = 0; i < batchSize; i++) {
+            const Operation& op = batch[i];
+            float* queryDst = h_batchQueries + i * D;
+
+            if (!op.event.vector.empty()) {
+                for (unsigned j = 0; j < D && j < op.event.vector.size(); j++) {
+                    queryDst[j] = op.event.vector[j];
+                }
+                for (unsigned j = op.event.vector.size(); j < D; j++) {
+                    queryDst[j] = 0.0f;
+                }
+            } else if (h_queries != nullptr) {
+                memcpy(queryDst, h_queries + op.event.queryId * D, D * sizeof(float));
+            }
+        }
+        cudaMemcpy(d_batchQueries, h_batchQueries, batchSize * D * sizeof(float),
+                   cudaMemcpyHostToDevice);
     }
 
-    // Single large transfer instead of many small ones
-    cudaMemcpy(d_batchQueries, h_batchQueries, batchSize * D * sizeof(float),
-               cudaMemcpyHostToDevice);
     cudaMemset(d_batchVisitedCounts, 0, batchSize * sizeof(unsigned));
 
     unsigned* d_deleted = deleteList->getDevicePointer();
@@ -719,9 +825,8 @@ void ConcurrentExecutor::processBatchQueries(std::vector<Operation>& batch) {
         d_batchVisitedSets, d_batchVisitedCounts, d_batchDists,
         d_batchVisitedAux, d_batchDistsAux, MAX_PARENTS_PERQUERY);
 
+    // Copy results back - need to handle stride (MAX_PARENTS_PERQUERY vs k)
     cudaDeviceSynchronize();
-
-    // Copy all results back in one transfer
     for (unsigned i = 0; i < batchSize; i++) {
         unsigned* d_visitedSet = d_batchVisitedSets + i * MAX_PARENTS_PERQUERY;
         cudaMemcpy(h_batchResults + i * k, d_visitedSet, k * sizeof(unsigned),
@@ -755,25 +860,19 @@ void ConcurrentExecutor::batchWorker() {
     localBatch.reserve(BATCH_SIZE);
 
     while (running) {
-        // Collect queries from lock-free queue until batch is full or timeout
+        // BANG-STYLE: Aggressively collect ALL available queries for maximum batch size!
         Operation op;
-        auto batchStart = std::chrono::steady_clock::now();
-        const auto timeout = std::chrono::milliseconds(2);  // 2ms timeout for batching
 
-        while (localBatch.size() < BATCH_SIZE) {
-            if (queryQueueLF->tryPop(op)) {
-                localBatch.push_back(op);
-            } else {
-                // Check timeout
-                auto elapsed = std::chrono::steady_clock::now() - batchStart;
-                if (elapsed > timeout && !localBatch.empty()) {
-                    break;  // Process what we have
-                }
-                if (elapsed > timeout && localBatch.empty() && !running) {
-                    break;  // Exit condition
-                }
-                std::this_thread::yield();
-            }
+        // First, collect at least 1 query (blocking wait)
+        while (running && !queryQueueLF->tryPop(op)) {
+            std::this_thread::sleep_for(std::chrono::microseconds(10));
+        }
+        if (!running) break;
+        localBatch.push_back(op);
+
+        // Then drain ALL available queries from queue (no timeout!)
+        while (localBatch.size() < BATCH_SIZE && queryQueueLF->tryPop(op)) {
+            localBatch.push_back(op);
         }
 
         if (!running && localBatch.empty()) break;

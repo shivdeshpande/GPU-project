@@ -24,7 +24,7 @@
 // Number of streams per operation type for parallelism
 #define NUM_QUERY_STREAMS 8
 #define NUM_INSERT_STREAMS 4
-#define BATCH_SIZE 32  // Number of queries to batch together
+#define BATCH_SIZE 10000  // BANG-STYLE: Large batches for maximum GPU utilization
 
 // Pre-allocated resources per stream to avoid malloc overhead
 struct QueryStreamResources {
@@ -72,6 +72,8 @@ struct BatchBuffers {
     float* d_batchDistsAux;
     float* h_batchQueries;      // Pinned host memory
     unsigned* h_batchResults;   // Pinned host memory
+    unsigned* d_queryIds;       // Pre-allocated buffer for query IDs
+    unsigned* h_queryIds;       // Pinned host memory for query IDs
     unsigned allocatedSize;     // Size these were allocated for
 };
 
@@ -174,6 +176,7 @@ public:
     ConcurrentExecutor(uint8_t* d_graph,
                        DeleteList* deleteList,
                        float* h_queries,
+                       unsigned numQueries,
                        unsigned* h_groundtruth,
                        unsigned gtK,
                        unsigned k,
@@ -206,6 +209,9 @@ private:
     unsigned* d_versions;     // Version array for lock-free access
     DeleteList* deleteList;
     float* h_queries;
+    float* d_allQueries;      // BANG-STYLE: ALL queries pre-loaded on GPU (no per-batch copy!)
+    unsigned* d_allResults;   // BANG-STYLE: ALL results stored on GPU (no per-batch copy!)
+    unsigned numQueriesLoaded; // Number of queries loaded to GPU
     unsigned* h_groundtruth;
     unsigned gtK, k, searchL;
     float alpha;

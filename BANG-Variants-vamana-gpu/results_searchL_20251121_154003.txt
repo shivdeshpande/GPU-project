@@ -1,0 +1,260 @@
+========================================
+Workload: Query-Only
+File: test/workload_query_only_400.jsonl
+========================================
+
+Testing Search L = 10...
+  Inserts: (0%)
+0, Deletes: (0%)
+0, Queries: (100%)
+400
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 24268.0, Recall@5: 94.40%, Recall@10: 92.95%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 20...
+  Inserts: (0%)
+0, Deletes: (0%)
+0, Queries: (100%)
+400
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 30442.6, Recall@5: 99.20%, Recall@10: 98.22%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 40...
+  Inserts: (0%)
+0, Deletes: (0%)
+0, Queries: (100%)
+400
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 23891.3, Recall@5: 99.80%, Recall@10: 99.62%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 100...
+  Inserts: (0%)
+0, Deletes: (0%)
+0, Queries: (100%)
+400
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 20886.4, Recall@5: 100.00%, Recall@10: 99.83%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 150...
+  Inserts: (0%)
+0, Deletes: (0%)
+0, Queries: (100%)
+400
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 21955.5, Recall@5: 100.00%, Recall@10: 99.92%
+  Total Time: ms, Throughput:  ops/sec
+
+
+========================================
+Workload: Query-Heavy
+File: test/workload_query_heavy_400.jsonl
+========================================
+
+Testing Search L = 10...
+  Inserts: (3%)
+12, Deletes: (2%)
+8, Queries: (95%)
+380
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 16751.9, Recall@5: 94.37%, Recall@10: 92.95%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 20...
+  Inserts: (3%)
+12, Deletes: (2%)
+8, Queries: (95%)
+380
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 15412.0, Recall@5: 99.00%, Recall@10: 98.16%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 40...
+  Inserts: (3%)
+12, Deletes: (2%)
+8, Queries: (95%)
+380
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 14336.4, Recall@5: 99.58%, Recall@10: 99.58%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 100...
+  Inserts: (3%)
+12, Deletes: (2%)
+8, Queries: (95%)
+380
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 10025.6, Recall@5: 99.79%, Recall@10: 99.79%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 150...
+  Inserts: (3%)
+12, Deletes: (2%)
+8, Queries: (95%)
+380
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 7889.9, Recall@5: 99.79%, Recall@10: 99.89%
+  Total Time: ms, Throughput:  ops/sec
+
+
+========================================
+Workload: Balanced
+File: test/workload_balanced_400.jsonl
+========================================
+
+Testing Search L = 10...
+  Inserts: (25%)
+100, Deletes: (15%)
+60, Queries: (60%)
+240
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 5300.1, Recall@5: 93.92%, Recall@10: 92.42%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 20...
+  Inserts: (25%)
+100, Deletes: (15%)
+60, Queries: (60%)
+240
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 5457.0, Recall@5: 99.25%, Recall@10: 98.08%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 40...
+  Inserts: (25%)
+100, Deletes: (15%)
+60, Queries: (60%)
+240
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 3883.4, Recall@5: 99.75%, Recall@10: 99.50%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 100...
+  Inserts: (25%)
+100, Deletes: (15%)
+60, Queries: (60%)
+240
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 1884.0, Recall@5: 99.92%, Recall@10: 99.71%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 150...
+  Inserts: (25%)
+100, Deletes: (15%)
+60, Queries: (60%)
+240
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 2048.6, Recall@5: 99.92%, Recall@10: 99.83%
+  Total Time: ms, Throughput:  ops/sec
+
+
+========================================
+Workload: Insert-Heavy
+File: test/workload_insert_heavy_400.jsonl
+========================================
+
+Testing Search L = 10...
+  Inserts: (50%)
+200, Deletes: (10%)
+40, Queries: (40%)
+160
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 3098.1, Recall@5: 94.12%, Recall@10: 92.38%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 20...
+  Inserts: (50%)
+200, Deletes: (10%)
+40, Queries: (40%)
+160
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 2957.6, Recall@5: 99.25%, Recall@10: 97.56%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 40...
+  Inserts: (50%)
+200, Deletes: (10%)
+40, Queries: (40%)
+160
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 2553.1, Recall@5: 99.75%, Recall@10: 99.06%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 100...
+  Inserts: (50%)
+200, Deletes: (10%)
+40, Queries: (40%)
+160
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 1417.8, Recall@5: 99.88%, Recall@10: 99.19%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 150...
+  Inserts: (50%)
+200, Deletes: (10%)
+40, Queries: (40%)
+160
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 856.7, Recall@5: 99.88%, Recall@10: 99.31%
+  Total Time: ms, Throughput:  ops/sec
+
+
+========================================
+Workload: Large-50K
+File: test/large_query_workload_50k.jsonl
+========================================
+
+Testing Search L = 10...
+  Inserts: (0%)
+0, Deletes: (0%)
+0, Queries: (100%)
+50000
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 120872.8, Recall@5: 60.00%, Recall@10: 69.99%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 20...
+  Inserts: (0%)
+0, Deletes: (0%)
+0, Queries: (100%)
+50000
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 112866.4, Recall@5: 99.99%, Recall@10: 99.98%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 40...
+  Inserts: (0%)
+0, Deletes: (0%)
+0, Queries: (100%)
+50000
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 101397.0, Recall@5: 99.99%, Recall@10: 99.99%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 100...
+  Inserts: (0%)
+0, Deletes: (0%)
+0, Queries: (100%)
+50000
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 78781.4, Recall@5: 99.99%, Recall@10: 99.99%
+  Total Time: ms, Throughput:  ops/sec
+
+Testing Search L = 150...
+  Inserts: (0%)
+0, Deletes: (0%)
+0, Queries: (100%)
+50000
+  Avg Insert: ms, Avg Delete: ms, Avg Query: ms
+  QPS: 65327.5, Recall@5: 99.99%, Recall@10: 99.99%
+  Total Time: ms, Throughput:  ops/sec
+
+
+========================================
+Benchmark Complete!
+Results saved to: results_searchL_20251121_154003.txt
+CSV saved to: results_searchL_20251121_154003.csv
+========================================

@@ -199,7 +199,7 @@ int main(int argc, char** argv) {
 
     // Initialize DeleteList and Concurrent Executor
     DeleteList deleteList(N);
-    ConcurrentExecutor executor(d_graph, &deleteList, h_queries, h_groundtruth,
+    ConcurrentExecutor executor(d_graph, &deleteList, h_queries, numQueries, h_groundtruth,
                                 gtK, k, searchL, alpha, consolidateThresh, numWorkers);
 
     printf("\nStarting concurrent workload execution...\n\n");
@@ -208,11 +208,18 @@ int main(int argc, char** argv) {
 
     // Submit all operations to the concurrent executor
     unsigned reportInterval = 1000;
+    unsigned insertDeleteCount = 0;
     for (size_t i = 0; i < workload.size(); i++) {
-        executor.submitOperation(workload[i]);
+        const WorkloadEvent& event = workload[i];
+        executor.submitOperation(event);
 
-        // Periodic consolidation check and progress report
-        if ((i + 1) % batchSize == 0) {
+        // Track inserts/deletes for consolidation
+        if (event.type == EVENT_INSERT || event.type == EVENT_DELETE) {
+            insertDeleteCount++;
+        }
+
+        // Periodic consolidation check ONLY for insert/delete batches
+        if (insertDeleteCount > 0 && insertDeleteCount % batchSize == 0) {
             executor.waitForCompletion();
             executor.checkConsolidation();
         }
